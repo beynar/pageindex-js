@@ -29,394 +29,649 @@ bun add @ai-sdk/openai
 # or @ai-sdk/anthropic, @ai-sdk/google, etc.
 ```
 
-## Quick Start
+---
 
-```typescript
-import { createPageIndex, createMemoryStorage } from 'pageindex'
-import { openai } from '@ai-sdk/openai'
+## Architecture Overview
 
-// Create a PageIndex instance
-const pageIndex = createPageIndex({
-  model: openai('gpt-4o'),
-  storage: createMemoryStorage(),
-})
+PageIndex is built in **three layers**, allowing you to use as much or as little abstraction as needed:
 
-// Index a markdown document
-const { document } = await pageIndex.index({
-  name: 'technical-spec',
-  type: 'markdown',
-  content: markdownContent,
-})
+```mermaid
+flowchart TB
+    subgraph L3["LAYER 3: Orchestration (User-Implemented)"]
+        O1["Multi-document search"]
+        O2["Document routing"]
+        O3["Result aggregation"]
+    end
 
-// Search using LLM reasoning
-const results = await pageIndex.search('How does authentication work?')
+    subgraph L2["LAYER 2: Document Operations (pageindex)"]
+        D1["createDocumentIndex()"]
+        D2["createPageIndex()"]
+        D1 --- D1d["Single-document index, search, CRUD"]
+        D2 --- D2d["Multi-document wrapper (backward compat)"]
+    end
 
-// Retrieve content with context
-const { context } = await pageIndex.retrieve('What are the API rate limits?')
-console.log(context) // Assembled content from relevant sections
+    subgraph L1["LAYER 1: Core Primitives (pageindex/core)"]
+        P1["TreeBuilder"]
+        P2["TreePostProcessor"]
+        P3["TreeSearchEngine"]
+        P4["ContentRetriever"]
+    end
+
+    L3 -->|uses| L2
+    L2 -->|uses| L1
+
+    style L3 fill:#e1f5fe
+    style L2 fill:#fff3e0
+    style L1 fill:#f3e5f5
 ```
 
-## Features
+### When to Use Each Layer
 
-### Document Processing
+| Use Case                            | Recommended API                               |
+| ----------------------------------- | --------------------------------------------- |
+| Quick prototyping, single documents | `createDocumentIndex()`                       |
+| Multi-document search (simple)      | `createPageIndex()`                           |
+| Cloudflare Durable Objects          | `createDocumentIndex()` + custom orchestrator |
+| Custom search pipelines             | Layer 1 primitives                            |
 
-- **Markdown** - Parses headers to build hierarchical structure
-- **PDF** - Extracts text and detects table of contents using LLM
+---
 
-### Tree Building
+## Quick Start: Single Document Index
 
-- Automatic TOC detection and parsing
-- LLM-based section extraction for documents without TOC
-- Configurable node splitting by page count and token limits
-- Optional tree thinning to merge small sections
+For most use cases, `createDocumentIndex()` is all you need. It provides a clean API for indexing and searching a single document.
 
-### Search & Retrieval
+```typescript
+import { createDocumentIndex, createSQLiteStorage } from "pageindex";
+import { openai } from "@ai-sdk/openai";
 
-- LLM-based tree navigation with reasoning
-- Multi-hop reasoning for complex queries
-- Relevance scoring with explanations
-- Content assembly from multiple nodes
+// Create storage (SQLite for local dev)
+const storage = createSQLiteStorage(":memory:");
+storage.initialize();
 
-### Storage Backends
+// Create a document index
+const docIndex = createDocumentIndex({
+	model: openai("gpt-4o"),
+	storage,
+});
 
-- **Memory** - In-memory storage for development
-- **SQLite** - Local file or in-memory database (bun:sqlite)
-- **Cloudflare KV** - For Cloudflare Workers
-- **Cloudflare D1** - SQLite-based database for Cloudflare Workers
-- **Redis** - Compatible with Redis, Upstash, etc.
+// Index a markdown document
+const { document, stats } = await docIndex.index({
+	name: "technical-spec",
+	type: "markdown",
+	content: `
+# API Documentation
+
+## Authentication
+Users authenticate using OAuth 2.0 with JWT tokens.
+Rate limits: 100 requests/minute for standard users.
+
+## Endpoints
+### GET /users
+Returns a list of users...
+
+### POST /users
+Creates a new user...
+  `,
+});
+
+console.log(
+	`Indexed: ${document.name} (${stats.pageCount} pages, ${stats.tokenCount} tokens)`,
+);
+
+// Search using LLM reasoning
+const results = await docIndex.search("What are the rate limits?");
+
+for (const result of results) {
+	console.log(`[${result.score.toFixed(2)}] ${result.node.title}`);
+	console.log(`  Reasoning: ${result.reasoning}`);
+	console.log(`  Content: ${result.node.text?.substring(0, 100)}...`);
+}
+
+// Get document summary (useful for orchestrators)
+const summary = await docIndex.getSummary();
+console.log(summary);
+// {
+//   id: 'technical-spec-m4x7k2-abc123',
+//   name: 'technical-spec',
+//   description: 'API documentation covering authentication and endpoints...',
+//   pageCount: 4,
+//   topLevelNodes: [{ nodeId: '0000', title: 'API Documentation', summary: '...' }]
+// }
+
+// Cleanup
+storage.close();
+```
+
+### DocumentIndex API
+
+```typescript
+interface DocumentIndex {
+	// Current document ID (null if not indexed yet)
+	readonly documentId: string | null;
+
+	// Index a document (creates or replaces)
+	index(document: DocumentInput): Promise<IndexResult>;
+
+	// Search within this document
+	search(query: string, options?: SearchOptions): Promise<SearchResult[]>;
+
+	// Get indexed document metadata
+	getDocument(): Promise<IndexedDocument | null>;
+
+	// Get tree structure
+	getTree(): Promise<TreeNode[] | null>;
+
+	// Get page content by range
+	getContent(startIndex: number, endIndex: number): Promise<string>;
+
+	// Get summary for orchestrators
+	getSummary(): Promise<DocumentSummary | null>;
+
+	// Check if document is indexed
+	isIndexed(): Promise<boolean>;
+
+	// Delete document from storage
+	clear(): Promise<void>;
+}
+```
+
+---
+
+## Multi-Document with Orchestrator
+
+For production systems with multiple documents, you'll want to implement an **orchestrator** that:
+
+- Maintains a global index of all documents
+- Routes search queries to relevant documents
+- Aggregates and ranks results
+
+This pattern is especially powerful with **Cloudflare Durable Objects**, where each document gets its own isolated storage and compute.
+
+### Architecture
+
+```mermaid
+flowchart TB
+    subgraph Orchestrator["Orchestrator"]
+        direction TB
+        R1["Global document registry (D1/SQLite)"]
+        R2["Query routing"]
+        R3["Result aggregation"]
+    end
+
+    Orchestrator --> Doc1
+    Orchestrator --> Doc2
+    Orchestrator --> Doc3
+
+    subgraph Doc1["DocIndex 1"]
+        S1[(SQLite)]
+    end
+
+    subgraph Doc2["DocIndex 2"]
+        S2[(SQLite)]
+    end
+
+    subgraph Doc3["DocIndex 3"]
+        S3[(SQLite)]
+    end
+
+    style Orchestrator fill:#e8f5e9
+    style Doc1 fill:#fff3e0
+    style Doc2 fill:#fff3e0
+    style Doc3 fill:#fff3e0
+```
+
+### Example: Simple Multi-Document Orchestrator
+
+```typescript
+import { createDocumentIndex, createSQLiteStorage } from "pageindex";
+import type { DocumentIndex, DocumentSummary, SearchResult } from "pageindex";
+import { openai } from "@ai-sdk/openai";
+
+interface DocumentRegistry {
+	id: string;
+	name: string;
+	collection: string;
+	summary: DocumentSummary;
+	index: DocumentIndex;
+}
+
+class DocumentOrchestrator {
+	private documents = new Map<string, DocumentRegistry>();
+	private model = openai("gpt-4o");
+
+	/**
+	 * Index a new document
+	 */
+	async indexDocument(
+		name: string,
+		content: string,
+		type: "markdown" | "pdf",
+		collection = "default",
+	): Promise<string> {
+		// Each document gets its own storage (could be separate SQLite files or DOs)
+		const storage = createSQLiteStorage(":memory:");
+		storage.initialize();
+
+		const docIndex = createDocumentIndex({
+			model: this.model,
+			storage,
+			processing: {
+				addNodeSummary: true,
+				addDocDescription: true,
+			},
+		});
+
+		const result = await docIndex.index({ name, type, content });
+		const summary = await docIndex.getSummary();
+
+		if (!summary) throw new Error("Failed to get document summary");
+
+		this.documents.set(summary.id, {
+			id: summary.id,
+			name,
+			collection,
+			summary,
+			index: docIndex,
+		});
+
+		console.log(`Indexed "${name}" with ${summary.pageCount} pages`);
+		return summary.id;
+	}
+
+	/**
+	 * Search across all documents in a collection
+	 */
+	async search(
+		query: string,
+		options: {
+			collection?: string;
+			maxDocuments?: number;
+			maxResults?: number;
+		} = {},
+	): Promise<
+		Array<SearchResult & { documentId: string; documentName: string }>
+	> {
+		const {
+			collection = "default",
+			maxDocuments = 10,
+			maxResults = 5,
+		} = options;
+
+		// Filter documents by collection
+		const docs = Array.from(this.documents.values())
+			.filter((d) => d.collection === collection)
+			.slice(0, maxDocuments);
+
+		if (docs.length === 0) {
+			return [];
+		}
+
+		// Search all documents in parallel
+		const searchResults = await Promise.all(
+			docs.map(async (doc) => {
+				try {
+					const results = await doc.index.search(query, { maxResults: 3 });
+					return results.map((r) => ({
+						...r,
+						documentId: doc.id,
+						documentName: doc.name,
+					}));
+				} catch (error) {
+					console.error(`Search failed for ${doc.name}:`, error);
+					return [];
+				}
+			}),
+		);
+
+		// Merge, sort by score, and return top results
+		return searchResults
+			.flat()
+			.sort((a, b) => b.score - a.score)
+			.slice(0, maxResults);
+	}
+
+	/**
+	 * Search a specific document
+	 */
+	async searchDocument(
+		documentId: string,
+		query: string,
+		options?: { maxResults?: number },
+	): Promise<SearchResult[]> {
+		const doc = this.documents.get(documentId);
+		if (!doc) throw new Error(`Document ${documentId} not found`);
+		return doc.index.search(query, options);
+	}
+
+	/**
+	 * List all documents
+	 */
+	listDocuments(collection?: string): DocumentSummary[] {
+		return Array.from(this.documents.values())
+			.filter((d) => !collection || d.collection === collection)
+			.map((d) => d.summary);
+	}
+
+	/**
+	 * Delete a document
+	 */
+	async deleteDocument(documentId: string): Promise<void> {
+		const doc = this.documents.get(documentId);
+		if (doc) {
+			await doc.index.clear();
+			this.documents.delete(documentId);
+		}
+	}
+}
+
+// Usage
+const orchestrator = new DocumentOrchestrator();
+
+// Index multiple documents
+await orchestrator.indexDocument(
+	"api-docs",
+	apiDocsMarkdown,
+	"markdown",
+	"documentation",
+);
+
+await orchestrator.indexDocument(
+	"user-guide",
+	userGuideMarkdown,
+	"markdown",
+	"documentation",
+);
+
+await orchestrator.indexDocument(
+	"quarterly-report",
+	quarterlyReportMarkdown,
+	"markdown",
+	"finance",
+);
+
+// Search across documentation
+const results = await orchestrator.search("How do I authenticate?", {
+	collection: "documentation",
+	maxResults: 5,
+});
+
+for (const result of results) {
+	console.log(
+		`[${result.score.toFixed(2)}] ${result.documentName} > ${result.node.title}`,
+	);
+}
+```
+
+### Cloudflare Durable Objects Example
+
+For production deployments, each document can be its own Durable Object with isolated SQLite storage. See [examples/cloudflare-do/](./examples/cloudflare-do/) for a complete implementation including:
+
+- `document-do.ts` - Durable Object wrapping `createDocumentIndex()`
+- `orchestrator.ts` - Orchestration logic with D1 global index
+- `router.ts` - Hono API routes
+- `wrangler.toml` - Cloudflare configuration
+
+```typescript
+// Document Durable Object (simplified)
+import { DurableObject } from "cloudflare:workers";
+import { createDocumentIndex, createDOStorage } from "pageindex";
+import { openai } from "@ai-sdk/openai";
+
+export class DocumentDO extends DurableObject {
+	private docIndex: DocumentIndex | null = null;
+
+	private getDocIndex(): DocumentIndex {
+		if (!this.docIndex) {
+			this.docIndex = createDocumentIndex({
+				model: openai("gpt-4o", { apiKey: this.env.OPENAI_API_KEY }),
+				storage: createDOStorage(this.ctx.storage.sql),
+				documentId: this.ctx.id.toString(),
+			});
+		}
+		return this.docIndex;
+	}
+
+	async index(document: DocumentInput): Promise<IndexResult> {
+		return this.getDocIndex().index(document);
+	}
+
+	async search(
+		query: string,
+		options?: SearchOptions,
+	): Promise<SearchResult[]> {
+		return this.getDocIndex().search(query, options);
+	}
+
+	async getSummary(): Promise<DocumentSummary | null> {
+		return this.getDocIndex().getSummary();
+	}
+}
+```
+
+---
 
 ## Configuration
 
-### Full Configuration Options
+### Processing Options
 
 ```typescript
-import { createPageIndex } from 'pageindex'
-import { openai } from '@ai-sdk/openai'
-import { createMemoryStorage } from 'pageindex'
+const docIndex = createDocumentIndex({
+	model: openai("gpt-4o"),
+	storage: createSQLiteStorage(":memory:"),
 
-const pageIndex = createPageIndex({
-  // Required: LLM model from Vercel AI SDK
-  model: openai('gpt-4o'),
+	processing: {
+		// PDF: Pages to scan for TOC detection
+		tocCheckPages: 20,
 
-  // Required: Storage driver
-  storage: createMemoryStorage(),
+		// Maximum tokens per tree node
+		maxTokensPerNode: 20000,
 
-  // Optional: Processing options
-  processing: {
-    // PDF: Number of pages to scan for TOC detection
-    tocCheckPages: 20,
+		// Add unique IDs to nodes (0000, 0001, etc.)
+		addNodeId: true,
 
-    // Maximum tokens per tree node
-    maxTokensPerNode: 20000,
+		// Generate AI summaries for nodes (improves search quality)
+		addNodeSummary: true,
 
-    // Add unique IDs to nodes (0000, 0001, etc.)
-    addNodeId: true,
+		// Generate document-level description
+		addDocDescription: true,
 
-    // Generate AI summaries for each node
-    addNodeSummary: true,
+		// Minimum tokens to generate a summary
+		summaryTokenThreshold: 200,
 
-    // Generate document-level description
-    addDocDescription: false,
+		// Content storage strategy:
+		// 'inline' - Store text in tree nodes (fast, more memory)
+		// 'separate' - Store text separately (slower, less memory)
+		// 'auto' - Choose based on document size (default)
+		contentStorage: "auto",
 
-    // Minimum tokens to generate a summary
-    summaryTokenThreshold: 200,
+		// Page threshold for 'auto' mode
+		autoStoragePageThreshold: 50,
+	},
 
-    // Markdown: Merge small sections
-    enableTreeThinning: false,
-    thinningThreshold: 5000,
+	search: {
+		maxResults: 5,
+		minScore: 0.5,
+		maxDepth: Infinity,
 
-    // Content storage strategy
-    // 'inline' - Store text in tree nodes
-    // 'separate' - Store text separately (better for large docs)
-    // 'auto' - Choose based on document size
-    contentStorage: 'auto',
+		// Domain knowledge to guide search
+		expertKnowledge: "For API docs, authentication is usually in Section 2",
 
-    // Page threshold for auto mode
-    autoStoragePageThreshold: 50,
-  },
-
-  // Optional: Default search options
-  search: {
-    maxResults: 5,
-    minScore: 0.5,
-    includeContent: true,
-    maxDepth: Infinity,
-
-    // Expert knowledge to guide search (e.g., domain-specific hints)
-    // expertKnowledge: 'For financial queries, prioritize Item 7 MD&A',
-
-    // Document context for better relevance
-    // documentContext: 'This is a 10-K SEC filing',
-  },
-
-  // Enable debug logging
-  debug: false,
-})
+		// Context about the document type
+		documentContext: "This is a REST API specification",
+	},
+});
 ```
 
 ### Storage Drivers
 
-#### Memory Storage (Development)
+PageIndex uses SQL-based storage for full-featured document retrieval including reference following.
+
+#### SQLite (Local Development)
 
 ```typescript
-import { createMemoryStorage } from 'pageindex'
+import { createSQLiteStorage } from "pageindex";
 
-const storage = createMemoryStorage()
+// In-memory (testing)
+const storage = createSQLiteStorage(":memory:");
+storage.initialize();
+
+// File-based (persistent)
+const storage = createSQLiteStorage("./data/pageindex.db");
+storage.initialize();
+
+// Always close when done
+storage.close();
 ```
 
-#### SQLite Storage (Local/Testing)
+#### Cloudflare D1 (Workers)
 
 ```typescript
-import { createSQLiteStorage } from 'pageindex'
+import { createD1Storage } from "pageindex";
 
-// In-memory database (for testing)
-const storage = createSQLiteStorage(':memory:')
-storage.initialize()
-
-// File-based database (persistent)
-const storage = createSQLiteStorage('./data/pageindex.db')
-storage.initialize()
-
-// Don't forget to close when done
-storage.close()
-```
-
-#### Cloudflare KV
-
-```typescript
-import { createKVStorage } from 'pageindex'
-
-// In a Cloudflare Worker
 export default {
-  async fetch(request, env) {
-    const storage = createKVStorage(env.MY_KV_NAMESPACE)
-    // ...
-  }
+	async fetch(request, env) {
+		const storage = createD1Storage(env.DB);
+		await storage.initialize(); // Run once
+
+		const docIndex = createDocumentIndex({
+			model: openai("gpt-4o"),
+			storage,
+		});
+		// ...
+	},
+};
+```
+
+#### Cloudflare Durable Objects SQL
+
+```typescript
+import { createDOStorage } from "pageindex";
+
+export class DocumentDO extends DurableObject {
+	getStorage() {
+		// Uses the DO's built-in SQLite
+		return createDOStorage(this.ctx.storage.sql);
+	}
 }
 ```
 
-#### Redis / Upstash
+---
 
-```typescript
-import { createRedisStorage } from 'pageindex'
-import { Redis } from '@upstash/redis'
+## Layer 1: Core Primitives
 
-const redis = new Redis({
-  url: process.env.UPSTASH_URL,
-  token: process.env.UPSTASH_TOKEN,
-})
-
-const storage = createRedisStorage(redis, 'pageindex:') // optional prefix
-```
-
-#### Cloudflare D1
-
-```typescript
-import { createD1Storage } from 'pageindex'
-
-// In a Cloudflare Worker
-export default {
-  async fetch(request, env) {
-    const storage = createD1Storage(env.DB) // D1 binding
-
-    // Initialize table (call once, e.g., in a setup script)
-    await storage.initialize()
-
-    // Use with PageIndex
-    const pageIndex = createPageIndex({
-      model: openai('gpt-4o'),
-      storage,
-    })
-  }
-}
-```
-
-## API Reference
-
-### `createPageIndex(config)`
-
-Creates a PageIndex instance with the specified configuration.
-
-### PageIndex Methods
-
-#### `index(document)`
-
-Index a document and store its tree structure.
-
-```typescript
-const result = await pageIndex.index({
-  name: 'my-document',
-  type: 'markdown', // or 'pdf'
-  content: '# Title\n\n## Section...',
-  metadata: { author: 'John' }, // optional
-})
-
-// Result includes:
-// - document: IndexedDocument
-// - stats: { pageCount, tokenCount, nodeCount, durationMs }
-```
-
-#### `search(query, options?)`
-
-Search indexed documents using LLM reasoning.
-
-```typescript
-const results = await pageIndex.search('How do I configure X?', {
-  maxResults: 5,
-  minScore: 0.5,
-  documentIds: ['doc-id'], // optional: limit to specific docs
-
-  // Domain expertise to guide the search
-  expertKnowledge: 'Configuration is typically in Section 3 or Appendix A',
-
-  // Context about the document being searched
-  documentContext: 'Technical specification document',
-})
-
-// Each result includes:
-// - node: TreeNode
-// - score: number (0-1)
-// - path: string[] (path from root)
-// - reasoning: string (why this node is relevant)
-```
-
-#### `retrieve(query, options?)`
-
-Search and retrieve content from matching nodes.
-
-```typescript
-const { results, context } = await pageIndex.retrieve('Explain feature Y')
-
-// context: Assembled text from all relevant sections
-// results: Same as search()
-```
-
-#### `getDocument(id)`
-
-Get an indexed document by ID.
-
-```typescript
-const doc = await pageIndex.getDocument('doc-id')
-```
-
-#### `getTree(id)`
-
-Get the tree structure for a document.
-
-```typescript
-const tree = await pageIndex.getTree('doc-id')
-```
-
-#### `deleteDocument(id)`
-
-Delete an indexed document and its content.
-
-```typescript
-await pageIndex.deleteDocument('doc-id')
-```
-
-#### `listDocuments()`
-
-List all indexed documents.
-
-```typescript
-const docs = await pageIndex.listDocuments()
-```
-
-## Tree Structure
-
-Documents are converted to a hierarchical tree:
-
-```typescript
-interface TreeNode {
-  title: string           // Section title
-  nodeId: string          // Unique ID (e.g., "0001")
-  startIndex: number      // Start page/line
-  endIndex: number        // End page/line
-  summary?: string        // AI-generated summary
-  text?: string           // Full content (if inline storage)
-  nodes?: TreeNode[]      // Child sections
-}
-```
-
-## Utilities
-
-### Tree Navigation
+For advanced use cases, you can use the stateless primitives directly:
 
 ```typescript
 import {
-  getAllNodes,
-  getLeafNodes,
-  findNodeById,
-  getNodePath,
-  traverseTree,
-} from 'pageindex'
+	TreeBuilder,
+	TreePostProcessor,
+	TreeSearchEngine,
+	ContentRetriever,
+	createTreeBuilder,
+	createPostProcessor,
+	createSearchEngine,
+	createRetriever,
+} from "pageindex/core";
 
-// Get all nodes flattened
-const allNodes = getAllNodes(tree)
+// Build tree from document (no storage)
+const builder = createTreeBuilder(model, { addNodeId: true });
+const { tree, pages, stats } = await builder.build({
+	name: "doc",
+	type: "markdown",
+	content: markdownContent,
+});
 
-// Get only leaf nodes (no children)
-const leaves = getLeafNodes(tree)
+// Add summaries (no storage)
+const processor = createPostProcessor(model, { addNodeSummary: true });
+const { tree: processedTree, description } = await processor.process(
+	tree,
+	pages,
+);
 
-// Find a specific node
-const node = findNodeById(tree, '0005')
+// Search tree (no storage)
+const searchEngine = createSearchEngine(model);
+const results = await searchEngine.search("authentication", processedTree, {
+	maxResults: 5,
+});
+```
 
-// Get path from root to node
-const path = getNodePath(tree, '0005') // ['0000', '0002', '0005']
+### Tree Navigation Utilities
+
+```typescript
+import {
+	getAllNodes,
+	getLeafNodes,
+	findNodeById,
+	getNodePath,
+	traverseTree,
+	isLeafNode,
+	getNodeDepth,
+	findNodesByTitle,
+} from "pageindex/core";
+
+// Flatten tree
+const allNodes = getAllNodes(tree);
+
+// Find specific node
+const node = findNodeById(tree, "0005");
+const path = getNodePath(tree, "0005"); // ['0000', '0002', '0005']
 
 // Custom traversal
-traverseTree(tree, (node, depth, path) => {
-  console.log(`${'  '.repeat(depth)}${node.title}`)
-})
+traverseTree(tree, (node, depth) => {
+	console.log(`${"  ".repeat(depth)}${node.title}`);
+});
 ```
 
-### Token Counting
+### Token Utilities
 
 ```typescript
-import { countTokens, truncateToTokens, splitIntoChunks } from 'pageindex'
+import { countTokens, truncateToTokens, splitIntoChunks } from "pageindex";
 
-// Count tokens in text
-const tokens = countTokens('Hello, world!')
-
-// Truncate to fit token limit
-const truncated = truncateToTokens(longText, 1000)
-
-// Split into chunks
-const chunks = splitIntoChunks(veryLongText, 4000)
+const tokens = countTokens("Hello, world!");
+const truncated = truncateToTokens(longText, 1000);
+const chunks = splitIntoChunks(veryLongText, 4000);
 ```
 
-## Custom Storage Driver
+---
 
-Implement the `StorageDriver` interface for custom backends:
+## Backward Compatibility
+
+The original `createPageIndex()` API is still available for multi-document use cases:
 
 ```typescript
-import type { StorageDriver, StoredItem, ListQuery } from 'pageindex'
+import { createPageIndex, createSQLiteStorage } from "pageindex";
 
-class MyStorage implements StorageDriver {
-  async get(key: string): Promise<StoredItem | null> { ... }
-  async set(key: string, value: StoredItem): Promise<void> { ... }
-  async delete(key: string): Promise<boolean> { ... }
-  async list(query?: ListQuery): Promise<string[]> { ... }
-  async exists(key: string): Promise<boolean> { ... }
-  async getMany(keys: string[]): Promise<Map<string, StoredItem | null>> { ... }
-  async setMany(items: Map<string, StoredItem>): Promise<void> { ... }
-  async deleteMany(keys: string[]): Promise<number> { ... }
-}
+const storage = createSQLiteStorage(":memory:");
+storage.initialize();
+
+const pageIndex = createPageIndex({
+	model: openai("gpt-4o"),
+	storage,
+});
+
+// Index multiple documents
+await pageIndex.index({ name: "doc1", type: "markdown", content: "..." });
+await pageIndex.index({ name: "doc2", type: "markdown", content: "..." });
+
+// Search across all documents
+const results = await pageIndex.search("query");
+
+// List all documents
+const docs = await pageIndex.listDocuments();
 ```
 
-Key format conventions:
-- Documents: `doc:{documentId}`
-- Content: `content:{documentId}:{pageIndex}`
-- Metadata: `meta:{key}`
+---
 
 ## Environment Compatibility
 
-PageIndex is designed to work in various JavaScript environments:
+| Environment                | Storage | Notes                         |
+| -------------------------- | ------- | ----------------------------- |
+| Node.js                    | SQLite  | Full support                  |
+| Bun                        | SQLite  | Full support                  |
+| Cloudflare Workers         | D1      | Full support                  |
+| Cloudflare Durable Objects | DO SQL  | Full support, isolated per DO |
 
-- **Node.js** - Full support including PDF processing
-- **Bun** - Full support
-- **Cloudflare Workers** - Full support (use KV storage)
-- **Edge runtimes** - Supported with appropriate storage driver
+---
 
 ## Development
 
@@ -433,6 +688,8 @@ bun run typecheck
 # Build
 bun run build
 ```
+
+---
 
 ## License
 

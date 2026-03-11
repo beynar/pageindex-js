@@ -1,185 +1,208 @@
-import { describe, test, expect, beforeEach } from 'bun:test'
-import { MemoryStorage, createMemoryStorage } from '../src/storage/memory'
-import type { StoredItem } from '../src/storage/driver'
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { createSQLiteStorage } from "../src/storage/sqlite";
+import type { StoredItem } from "../src/storage/driver";
 
-describe('MemoryStorage', () => {
-  let storage: MemoryStorage
+describe("SQLiteStorage", () => {
+	let storage: ReturnType<typeof createSQLiteStorage>;
 
-  beforeEach(() => {
-    storage = new MemoryStorage()
-  })
+	beforeEach(() => {
+		storage = createSQLiteStorage(":memory:");
+		storage.initialize();
+	});
 
-  test('get returns null for non-existent key', async () => {
-    const result = await storage.get('non-existent')
-    expect(result).toBeNull()
-  })
+	afterEach(() => {
+		storage.close();
+	});
 
-  test('set and get work correctly', async () => {
-    const item: StoredItem = {
-      type: 'document',
-      data: { test: 'data' },
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    }
+	test("get returns null for non-existent key", async () => {
+		const result = await storage.get("non-existent");
+		expect(result).toBeNull();
+	});
 
-    await storage.set('key1', item)
-    const result = await storage.get('key1')
+	test("set and get work correctly", async () => {
+		const item: StoredItem = {
+			type: "document",
+			data: { test: "data" },
+			createdAt: new Date(),
+			updatedAt: new Date(),
+		};
 
-    expect(result).not.toBeNull()
-    expect(result?.type).toBe('document')
-    expect(result?.data).toEqual({ test: 'data' })
-  })
+		await storage.set("key1", item);
+		const result = await storage.get("key1");
 
-  test('delete removes item', async () => {
-    const item: StoredItem = {
-      type: 'document',
-      data: {},
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    }
+		expect(result).not.toBeNull();
+		expect(result?.type).toBe("document");
+		expect(result?.data).toEqual({ test: "data" });
+	});
 
-    await storage.set('key1', item)
-    expect(await storage.exists('key1')).toBe(true)
+	test("delete removes item", async () => {
+		const item: StoredItem = {
+			type: "document",
+			data: {},
+			createdAt: new Date(),
+			updatedAt: new Date(),
+		};
 
-    const deleted = await storage.delete('key1')
-    expect(deleted).toBe(true)
-    expect(await storage.exists('key1')).toBe(false)
-  })
+		await storage.set("key1", item);
+		expect(await storage.exists("key1")).toBe(true);
 
-  test('list returns all keys', async () => {
-    const item: StoredItem = {
-      type: 'document',
-      data: {},
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    }
+		const deleted = await storage.delete("key1");
+		expect(deleted).toBe(true);
+		expect(await storage.exists("key1")).toBe(false);
+	});
 
-    await storage.set('doc:1', item)
-    await storage.set('doc:2', item)
-    await storage.set('content:1:0', { ...item, type: 'content' })
+	test("list returns all keys", async () => {
+		const item: StoredItem = {
+			type: "document",
+			data: {},
+			createdAt: new Date(),
+			updatedAt: new Date(),
+		};
 
-    const allKeys = await storage.list()
-    expect(allKeys).toHaveLength(3)
-    expect(allKeys).toContain('doc:1')
-    expect(allKeys).toContain('doc:2')
-    expect(allKeys).toContain('content:1:0')
-  })
+		await storage.set("doc:1", item);
+		await storage.set("doc:2", item);
+		await storage.set("content:1:0", { ...item, type: "content" });
 
-  test('list with prefix filter', async () => {
-    const item: StoredItem = {
-      type: 'document',
-      data: {},
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    }
+		const allKeys = await storage.list();
+		expect(allKeys).toHaveLength(3);
+		expect(allKeys).toContain("doc:1");
+		expect(allKeys).toContain("doc:2");
+		expect(allKeys).toContain("content:1:0");
+	});
 
-    await storage.set('doc:1', item)
-    await storage.set('doc:2', item)
-    await storage.set('content:1:0', { ...item, type: 'content' })
+	test("list with prefix filter", async () => {
+		const item: StoredItem = {
+			type: "document",
+			data: {},
+			createdAt: new Date(),
+			updatedAt: new Date(),
+		};
 
-    const docKeys = await storage.list({ prefix: 'doc:' })
-    expect(docKeys).toHaveLength(2)
-    expect(docKeys).toContain('doc:1')
-    expect(docKeys).toContain('doc:2')
-  })
+		await storage.set("doc:1", item);
+		await storage.set("doc:2", item);
+		await storage.set("content:1:0", { ...item, type: "content" });
 
-  test('list with type filter', async () => {
-    const docItem: StoredItem = {
-      type: 'document',
-      data: {},
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    }
-    const contentItem: StoredItem = {
-      type: 'content',
-      data: {},
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    }
+		const docKeys = await storage.list({ prefix: "doc:" });
+		expect(docKeys).toHaveLength(2);
+		expect(docKeys).toContain("doc:1");
+		expect(docKeys).toContain("doc:2");
+	});
 
-    await storage.set('doc:1', docItem)
-    await storage.set('content:1:0', contentItem)
-    await storage.set('content:1:1', contentItem)
+	test("list with type filter", async () => {
+		const docItem: StoredItem = {
+			type: "document",
+			data: {},
+			createdAt: new Date(),
+			updatedAt: new Date(),
+		};
+		const contentItem: StoredItem = {
+			type: "content",
+			data: {},
+			createdAt: new Date(),
+			updatedAt: new Date(),
+		};
 
-    const contentKeys = await storage.list({ type: 'content' })
-    expect(contentKeys).toHaveLength(2)
-  })
+		await storage.set("doc:1", docItem);
+		await storage.set("content:1:0", contentItem);
+		await storage.set("content:1:1", contentItem);
 
-  test('getMany returns map of items', async () => {
-    const item1: StoredItem = {
-      type: 'document',
-      data: { id: 1 },
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    }
-    const item2: StoredItem = {
-      type: 'document',
-      data: { id: 2 },
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    }
+		const contentKeys = await storage.list({ type: "content" });
+		expect(contentKeys).toHaveLength(2);
+	});
 
-    await storage.set('key1', item1)
-    await storage.set('key2', item2)
+	test("getMany returns map of items", async () => {
+		const item1: StoredItem = {
+			type: "document",
+			data: { id: 1 },
+			createdAt: new Date(),
+			updatedAt: new Date(),
+		};
+		const item2: StoredItem = {
+			type: "document",
+			data: { id: 2 },
+			createdAt: new Date(),
+			updatedAt: new Date(),
+		};
 
-    const results = await storage.getMany(['key1', 'key2', 'key3'])
+		await storage.set("key1", item1);
+		await storage.set("key2", item2);
 
-    expect(results.get('key1')?.data).toEqual({ id: 1 })
-    expect(results.get('key2')?.data).toEqual({ id: 2 })
-    expect(results.get('key3')).toBeNull()
-  })
+		const results = await storage.getMany(["key1", "key2", "key3"]);
 
-  test('setMany sets multiple items', async () => {
-    const items = new Map<string, StoredItem>([
-      ['key1', { type: 'document', data: { id: 1 }, createdAt: new Date(), updatedAt: new Date() }],
-      ['key2', { type: 'document', data: { id: 2 }, createdAt: new Date(), updatedAt: new Date() }],
-    ])
+		expect(results.get("key1")?.data).toEqual({ id: 1 });
+		expect(results.get("key2")?.data).toEqual({ id: 2 });
+		expect(results.get("key3")).toBeNull();
+	});
 
-    await storage.setMany(items)
+	test("setMany sets multiple items", async () => {
+		const items = new Map<string, StoredItem>([
+			[
+				"key1",
+				{
+					type: "document",
+					data: { id: 1 },
+					createdAt: new Date(),
+					updatedAt: new Date(),
+				},
+			],
+			[
+				"key2",
+				{
+					type: "document",
+					data: { id: 2 },
+					createdAt: new Date(),
+					updatedAt: new Date(),
+				},
+			],
+		]);
 
-    expect(await storage.exists('key1')).toBe(true)
-    expect(await storage.exists('key2')).toBe(true)
-  })
+		await storage.setMany(items);
 
-  test('deleteMany removes multiple items', async () => {
-    const item: StoredItem = {
-      type: 'document',
-      data: {},
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    }
+		expect(await storage.exists("key1")).toBe(true);
+		expect(await storage.exists("key2")).toBe(true);
+	});
 
-    await storage.set('key1', item)
-    await storage.set('key2', item)
-    await storage.set('key3', item)
+	test("deleteMany removes multiple items", async () => {
+		const item: StoredItem = {
+			type: "document",
+			data: {},
+			createdAt: new Date(),
+			updatedAt: new Date(),
+		};
 
-    const count = await storage.deleteMany(['key1', 'key2'])
-    expect(count).toBe(2)
-    expect(await storage.exists('key1')).toBe(false)
-    expect(await storage.exists('key2')).toBe(false)
-    expect(await storage.exists('key3')).toBe(true)
-  })
+		await storage.set("key1", item);
+		await storage.set("key2", item);
+		await storage.set("key3", item);
 
-  test('clear removes all items', async () => {
-    const item: StoredItem = {
-      type: 'document',
-      data: {},
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    }
+		const count = await storage.deleteMany(["key1", "key2"]);
+		expect(count).toBe(2);
+		expect(await storage.exists("key1")).toBe(false);
+		expect(await storage.exists("key2")).toBe(false);
+		expect(await storage.exists("key3")).toBe(true);
+	});
 
-    await storage.set('key1', item)
-    await storage.set('key2', item)
+	test("clear removes all items", async () => {
+		const item: StoredItem = {
+			type: "document",
+			data: {},
+			createdAt: new Date(),
+			updatedAt: new Date(),
+		};
 
-    await storage.clear()
+		await storage.set("key1", item);
+		await storage.set("key2", item);
 
-    expect(storage.size).toBe(0)
-  })
-})
+		await storage.clear();
 
-describe('createMemoryStorage', () => {
-  test('creates MemoryStorage instance', () => {
-    const storage = createMemoryStorage()
-    expect(storage).toBeDefined()
-  })
-})
+		const allKeys = await storage.list();
+		expect(allKeys).toHaveLength(0);
+	});
+});
+
+describe("createSQLiteStorage", () => {
+	test("creates SQLiteStorage instance", () => {
+		const storage = createSQLiteStorage(":memory:");
+		expect(storage).toBeDefined();
+		storage.close();
+	});
+});

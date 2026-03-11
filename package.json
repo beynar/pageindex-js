@@ -1,75 +1,83 @@
 {
-  "name": "pageindex",
-  "version": "0.1.0",
-  "description": "Reasoning-based RAG system with hierarchical tree indexing - no vector database required",
-  "type": "module",
-  "main": "./dist/index.js",
-  "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
-    },
-    "./storage": {
-      "import": "./dist/storage/index.js",
-      "types": "./dist/storage/index.d.ts"
-    }
-  },
-  "files": [
-    "dist"
-  ],
-  "scripts": {
-    "build": "bun run build:types && bun run build:js",
-    "build:js": "bun build ./src/index.ts ./src/storage/index.ts --outdir ./dist --target node --format esm --splitting --sourcemap=external --external ai --external unpdf --external gpt-tokenizer --external valibot --external @ai-sdk/valibot",
-    "build:types": "tsc --emitDeclarationOnly --declaration --outDir dist",
-    "test": "bun test",
-    "test:watch": "bun test --watch",
-    "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist",
-    "prepublishOnly": "bun run clean && bun run build"
-  },
-  "dependencies": {
-    "@ai-sdk/valibot": "^2.0.10",
-    "ai": "^6.0.49",
-    "gpt-tokenizer": "^2.5.0",
-    "unpdf": "^0.12.0",
-    "valibot": "^1.2.0"
-  },
-  "devDependencies": {
-    "@ai-sdk/cerebras": "^2.0.20",
-    "@cloudflare/workers-types": "^4.20241230.0",
-    "@types/bun": "latest",
-    "typescript": "^5.7.0"
-  },
-  "peerDependencies": {
-    "@ai-sdk/openai": ">=1.0.0",
-    "@ai-sdk/anthropic": ">=1.0.0"
-  },
-  "peerDependenciesMeta": {
-    "@ai-sdk/openai": {
-      "optional": true
-    },
-    "@ai-sdk/anthropic": {
-      "optional": true
-    }
-  },
-  "keywords": [
-    "rag",
-    "retrieval",
-    "llm",
-    "ai",
-    "document",
-    "indexing",
-    "tree",
-    "reasoning"
-  ],
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/arnaudderbey/pageindex-js"
-  },
-  "engines": {
-    "node": ">=18.0.0"
-  }
+	"name": "pageindex",
+	"version": "0.1.0",
+	"description": "Reasoning-based RAG system with hierarchical tree indexing - no vector database required",
+	"type": "module",
+	"main": "./dist/index.js",
+	"module": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"import": "./dist/index.js",
+			"types": "./dist/index.d.ts"
+		},
+		"./core": {
+			"import": "./dist/primitives/index.js",
+			"types": "./dist/primitives/index.d.ts"
+		},
+		"./storage": {
+			"import": "./dist/storage/index.js",
+			"types": "./dist/storage/index.d.ts"
+		},
+		"./document": {
+			"import": "./dist/document/index.js",
+			"types": "./dist/document/index.d.ts"
+		}
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build": "bun run build:types && bun run build:js",
+		"build:js": "bun build ./src/index.ts ./src/storage/index.ts ./src/document/index.ts ./src/primitives/index.ts --outdir ./dist --target node --format esm --splitting --sourcemap=external --external ai --external unpdf --external gpt-tokenizer --external valibot --external @ai-sdk/valibot",
+		"build:types": "tsc --emitDeclarationOnly --declaration --outDir dist",
+		"test": "bun test",
+		"test:watch": "bun test --watch",
+		"typecheck": "tsc --noEmit",
+		"clean": "rm -rf dist",
+		"prepublishOnly": "bun run clean && bun run build"
+	},
+	"dependencies": {
+		"@ai-sdk/valibot": "^2.0.10",
+		"ai": "^6.0.49",
+		"gpt-tokenizer": "^2.5.0",
+		"unpdf": "^0.12.0",
+		"valibot": "^1.2.0"
+	},
+	"devDependencies": {
+		"@ai-sdk/cerebras": "^2.0.20",
+		"@cloudflare/workers-types": "^4.20241230.0",
+		"@types/bun": "latest",
+		"typescript": "^5.7.0"
+	},
+	"peerDependencies": {
+		"@ai-sdk/openai": ">=1.0.0",
+		"@ai-sdk/anthropic": ">=1.0.0"
+	},
+	"peerDependenciesMeta": {
+		"@ai-sdk/openai": {
+			"optional": true
+		},
+		"@ai-sdk/anthropic": {
+			"optional": true
+		}
+	},
+	"keywords": [
+		"rag",
+		"retrieval",
+		"llm",
+		"ai",
+		"document",
+		"indexing",
+		"tree",
+		"reasoning"
+	],
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/arnaudderbey/pageindex-js"
+	},
+	"engines": {
+		"node": ">=18.0.0"
+	}
 }
